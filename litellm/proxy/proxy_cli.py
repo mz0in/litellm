@@ -18,10 +18,15 @@ import shutil
 telemetry = None
 
 def run_ollama_serve():
-    command = ['ollama', 'serve']
-    
-    with open(os.devnull, 'w') as devnull:
-        process = subprocess.Popen(command, stdout=devnull, stderr=devnull)
+    try:
+        command = ['ollama', 'serve']
+        
+        with open(os.devnull, 'w') as devnull:
+            process = subprocess.Popen(command, stdout=devnull, stderr=devnull)
+    except Exception as e:
+        print(f"""
+            LiteLLM Warning: proxy started with `ollama` model\n`ollama serve` failed with Exception{e}. \nEnsure you run `ollama serve`
+        """)
 
 def clone_subfolder(repo_url, subfolder, destination):
   # Clone the full repo
@@ -62,38 +67,32 @@ def is_port_in_use(port):
 @click.option('--headers', default=None, help='headers for the API call') 
 @click.option('--save', is_flag=True, type=bool, help='Save the model-specific config')
 @click.option('--debug', default=False, is_flag=True, type=bool, help='To debug the input') 
+@click.option('--use_queue', default=False, is_flag=True, type=bool, help='To use celery workers for async endpoints') 
 @click.option('--temperature', default=None, type=float, help='Set temperature for the model') 
 @click.option('--max_tokens', default=None, type=int, help='Set max tokens for the model') 
 @click.option('--request_timeout', default=600, type=int, help='Set timeout in seconds for completion calls') 
 @click.option('--drop_params', is_flag=True, help='Drop any unmapped params') 
-@click.option('--create_proxy', is_flag=True, help='Creates a local OpenAI-compatible server template') 
 @click.option('--add_function_to_prompt', is_flag=True, help='If function passed but unsupported, pass it as prompt') 
-@click.option('--config', '-c', help='Configure Litellm')  
+@click.option('--config', '-c', default=None, help='Configure Litellm')  
 @click.option('--file', '-f', help='Path to config file')
 @click.option('--max_budget', default=None, type=float, help='Set max budget for API calls - works for hosted models like OpenAI, TogetherAI, Anthropic, etc.`') 
 @click.option('--telemetry', default=True, type=bool, help='Helps us know if people are using this feature. Turn this off by doing `--telemetry False`') 
 @click.option('--logs', flag_value=False, type=int, help='Gets the "n" most recent logs. By default gets most recent log.') 
 @click.option('--test', flag_value=True, help='proxy chat completions url to make a test request to')
+@click.option('--test_async', default=False, is_flag=True, help='Calls async endpoints /queue/requests and /queue/response')
+@click.option('--num_requests', default=10, type=int, help='Number of requests to hit async endpoint with')
 @click.option('--local', is_flag=True, default=False, help='for local debugging')
-def run_server(host, port, api_base, api_version, model, alias, add_key, headers, save, debug, temperature, max_tokens, request_timeout, drop_params, create_proxy, add_function_to_prompt, config, file, max_budget, telemetry, logs, test, local, num_workers):
+def run_server(host, port, api_base, api_version, model, alias, add_key, headers, save, debug, temperature, max_tokens, request_timeout, drop_params, add_function_to_prompt, config, file, max_budget, telemetry, logs, test, local, num_workers, test_async, num_requests, use_queue):
     global feature_telemetry
     args = locals()
     if local:
-        from proxy_server import app, save_worker_config, usage_telemetry, add_keys_to_config
-        debug = True
+        from proxy_server import app, save_worker_config, usage_telemetry
     else:
         try:
-            from .proxy_server import app, save_worker_config, usage_telemetry, add_keys_to_config
+            from .proxy_server import app, save_worker_config, usage_telemetry
         except ImportError as e: 
-            from proxy_server import app, save_worker_config, usage_telemetry, add_keys_to_config
+            from proxy_server import app, save_worker_config, usage_telemetry
     feature_telemetry = usage_telemetry
-    if create_proxy == True: 
-        repo_url = 'https://github.com/BerriAI/litellm'
-        subfolder = 'litellm/proxy' 
-        destination = os.path.join(os.getcwd(), 'litellm-proxy')
-
-        clone_subfolder(repo_url, subfolder, destination)
-        return
     if logs is not None:
         if logs == 0: # default to 1
             logs = 1
@@ -114,40 +113,93 @@ def run_server(host, port, api_base, api_version, model, alias, add_key, headers
         except:
             print("LiteLLM: No logs saved!")
         return
-    if add_key:
-        key_name, key_value = add_key.split("=")
-        add_keys_to_config(key_name, key_value)
-        with open(user_config_path) as f:
-            print(f.read())
-        print("\033[1;32mDone successfully\033[0m")
-        return
     if model and "ollama" in model: 
-        print(f"ollama called")
         run_ollama_serve()
+    if test_async is True: 
+        import requests, concurrent, time
+        api_base = f"http://{host}:{port}"
+
+        def _make_openai_completion(): 
+            data = {
+                "model": "gpt-3.5-turbo", 
+                "messages": [{"role": "user", "content": "Write a short poem about the moon"}]
+            }
+
+            response = requests.post("http://0.0.0.0:8000/queue/request", json=data)
+
+            response = response.json()
+
+            while True: 
+                try: 
+                    url = response["url"]
+                    polling_url = f"{api_base}{url}"
+                    polling_response = requests.get(polling_url)
+                    polling_response = polling_response.json()
+                    print("\n RESPONSE FROM POLLING JOB", polling_response)
+                    status = polling_response["status"]
+                    if status == "finished":
+                        llm_response = polling_response["result"]
+                        break
+                    print(f"POLLING JOB{polling_url}\nSTATUS: {status}, \n Response {polling_response}")
+                    time.sleep(0.5)
+                except Exception as e:
+                    print("got exception in polling", e)
+                    break
+
+        # Number of concurrent calls (you can adjust this)
+        concurrent_calls = num_requests
+
+        # List to store the futures of concurrent calls
+        futures = []
+        start_time = time.time()
+        # Make concurrent calls
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrent_calls) as executor:
+            for _ in range(concurrent_calls):
+                futures.append(executor.submit(_make_openai_completion))
+
+        # Wait for all futures to complete
+        concurrent.futures.wait(futures)
+
+        # Summarize the results
+        successful_calls = 0
+        failed_calls = 0
+
+        for future in futures:
+            if future.done(): 
+                if future.result() is not None:
+                    successful_calls += 1
+                else:
+                    failed_calls += 1
+        end_time = time.time()
+        print(f"Elapsed Time: {end_time-start_time}")
+        print(f"Load test Summary:")
+        print(f"Total Requests: {concurrent_calls}")
+        print(f"Successful Calls: {successful_calls}")
+        print(f"Failed Calls: {failed_calls}")
+        return
     if test != False:
-        click.echo('LiteLLM: Making a test ChatCompletions request to your proxy')
+        click.echo('\nLiteLLM: Making a test ChatCompletions request to your proxy')
         import openai
         if test == True: # flag value set
             api_base = f"http://{host}:{port}"
         else: 
             api_base = test
-        openai.api_base = api_base
-        openai.api_key = "temp-key"
-        print(openai.api_base)
+        client = openai.OpenAI(
+            api_key="My API Key",
+            base_url=api_base
+        )
 
-        response = openai.Completion.create(model="gpt-3.5-turbo", prompt='this is a test request, write a short poem')
-        print(response)
-
-        response = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages = [
+        response = client.chat.completions.create(model="gpt-3.5-turbo", messages = [
             {
                 "role": "user",
                 "content": "this is a test request, write a short poem"
             }
-        ])
-        click.echo(f'LiteLLM: response from proxy {response}')
+        ], max_tokens=256)
+        click.echo(f'\nLiteLLM: response from proxy {response}')
 
-        click.echo(f'LiteLLM: response from proxy with streaming {response}')
-        response = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages = [
+        print("\n Making streaming request to proxy")
+
+        response = client.chat.completions.create(model="gpt-3.5-turbo", messages = [
             {
                 "role": "user",
                 "content": "this is a test request, write a short poem"
@@ -157,19 +209,19 @@ def run_server(host, port, api_base, api_version, model, alias, add_key, headers
         )
         for chunk in response:
             click.echo(f'LiteLLM: streaming response from proxy {chunk}')
+        print("\n making completion request to proxy")
+        response = client.completions.create(model="gpt-3.5-turbo", prompt='this is a test request, write a short poem')
+        print(response)
+
         return
     else:
         if headers:
             headers = json.loads(headers)
-        save_worker_config(model=model, alias=alias, api_base=api_base, api_version=api_version, debug=debug, temperature=temperature, max_tokens=max_tokens, request_timeout=request_timeout, max_budget=max_budget, telemetry=telemetry, drop_params=drop_params, add_function_to_prompt=add_function_to_prompt, headers=headers, save=save, config=config)
+        save_worker_config(model=model, alias=alias, api_base=api_base, api_version=api_version, debug=debug, temperature=temperature, max_tokens=max_tokens, request_timeout=request_timeout, max_budget=max_budget, telemetry=telemetry, drop_params=drop_params, add_function_to_prompt=add_function_to_prompt, headers=headers, save=save, config=config, use_queue=use_queue)
         try:
             import uvicorn
         except:
             raise ImportError("Uvicorn needs to be imported. Run - `pip install uvicorn`")
-        print(f"\033[32mLiteLLM: Test your local endpoint with: \"litellm --test\" [In a new terminal tab]\033[0m\n")
-        print(f"\033[32mLiteLLM: View available endpoints for this server on: http://{host}:{port}\033[0m\n")
-        print(f"\033[32mLiteLLM: Self-host your proxy using the following: https://docs.litellm.ai/docs/proxy_server#deploy-proxy \033[0m\n")
-        
         if port == 8000 and is_port_in_use(port):
             port = random.randint(1024, 49152)
         uvicorn.run("litellm.proxy.proxy_server:app", host=host, port=port, workers=num_workers)

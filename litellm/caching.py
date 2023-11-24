@@ -9,8 +9,8 @@
 
 import litellm
 import time, logging
-import json, traceback
-
+import json, traceback, ast
+from typing import Optional
 
 def get_prompt(*args, **kwargs):
     # make this safe checks, it should not throw any exceptions
@@ -24,6 +24,9 @@ def get_prompt(*args, **kwargs):
         return prompt
     return None
 
+def print_verbose(print_statement):
+    if litellm.set_verbose:
+        print(print_statement) # noqa
 
 class BaseCache:
     def set_cache(self, key, value, **kwargs):
@@ -31,61 +34,6 @@ class BaseCache:
 
     def get_cache(self, key, **kwargs):
         raise NotImplementedError
-
-
-class RedisCache(BaseCache):
-    def __init__(self, host, port, password):
-        import redis
-        # if users don't provider one, use the default litellm cache
-        self.redis_client = redis.Redis(host=host, port=port, password=password)
-
-    def set_cache(self, key, value, **kwargs):
-        ttl = kwargs.get("ttl", None)
-        try:
-            self.redis_client.set(name=key, value=str(value), ex=ttl)
-        except Exception as e:
-            # NON blocking - notify users Redis is throwing an exception
-            logging.debug("LiteLLM Caching: set() - Got exception from REDIS : ", e)
-
-    def get_cache(self, key, **kwargs):
-        try:
-            # TODO convert this to a ModelResponse object
-            cached_response = self.redis_client.get(key)
-            if cached_response != None:
-                # cached_response is in `b{} convert it to ModelResponse
-                cached_response = cached_response.decode("utf-8")  # Convert bytes to string
-                cached_response = json.loads(cached_response)  # Convert string to dictionary
-                cached_response['cache'] = True  # set cache-hit flag to True
-                return cached_response
-        except Exception as e:
-            # NON blocking - notify users Redis is throwing an exception
-            traceback.print_exc()
-            logging.debug("LiteLLM Caching: get() - Got exception from REDIS: ", e)
-
-
-class HostedCache(BaseCache):
-    def set_cache(self, key, value, **kwargs):
-        if "ttl" in kwargs:
-            logging.debug("LiteLLM Caching: TTL is not supported for hosted cache!")
-        # make a post request to api.litellm.ai/set_cache
-        import requests
-        url = f"https://api.litellm.ai/set_cache?key={key}&value={str(value)}"
-        requests.request("POST", url)  # post request to set this in the hosted litellm cache
-
-    def get_cache(self, key, **kwargs):
-        import requests
-        url = f"https://api.litellm.ai/get_cache?key={key}"
-        cached_response = requests.request("GET", url)
-        cached_response = cached_response.text
-        if cached_response == "NONE":  # api.litellm.ai returns "NONE" if it's not a cache hit
-            return None
-        if cached_response != None:
-            try:
-                cached_response = json.loads(cached_response)  # Convert string to dictionary
-                cached_response['cache'] = True  # set cache-hit flag to True
-                return cached_response
-            except:
-                return cached_response
 
 
 class InMemoryCache(BaseCache):
@@ -110,11 +58,97 @@ class InMemoryCache(BaseCache):
                 cached_response = json.loads(original_cached_response)
             except: 
                 cached_response = original_cached_response
-            cached_response['cache'] = True  # set cache-hit flag to True
+            if isinstance(cached_response, dict): 
+                    cached_response['cache'] = True  # set cache-hit flag to True
             return cached_response
         return None
 
 
+class RedisCache(BaseCache):
+    def __init__(self, host, port, password):
+        import redis
+        # if users don't provider one, use the default litellm cache
+        self.redis_client = redis.Redis(host=host, port=port, password=password)
+
+    def set_cache(self, key, value, **kwargs):
+        ttl = kwargs.get("ttl", None)
+        try:
+            self.redis_client.set(name=key, value=str(value), ex=ttl)
+        except Exception as e:
+            # NON blocking - notify users Redis is throwing an exception
+            logging.debug("LiteLLM Caching: set() - Got exception from REDIS : ", e)
+
+    def get_cache(self, key, **kwargs):
+        try:
+            # TODO convert this to a ModelResponse object
+            cached_response = self.redis_client.get(key)
+            if cached_response != None:
+                # cached_response is in `b{} convert it to ModelResponse
+                cached_response = cached_response.decode("utf-8")  # Convert bytes to string
+                try: 
+                    cached_response = json.loads(cached_response)  # Convert string to dictionary
+                except: 
+                    cached_response = ast.literal_eval(cached_response)
+                if isinstance(cached_response, dict): 
+                    cached_response['cache'] = True  # set cache-hit flag to True
+                return cached_response
+        except Exception as e:
+            # NON blocking - notify users Redis is throwing an exception
+            traceback.print_exc()
+            logging.debug("LiteLLM Caching: get() - Got exception from REDIS: ", e)
+
+class DualCache(BaseCache): 
+    """
+    This updates both Redis and an in-memory cache simultaneously. 
+    When data is updated or inserted, it is written to both the in-memory cache + Redis. 
+    This ensures that even if Redis hasn't been updated yet, the in-memory cache reflects the most recent data.
+    """
+    def __init__(self, in_memory_cache: Optional[InMemoryCache] =None, redis_cache: Optional[RedisCache] =None) -> None:
+        super().__init__()
+        # If in_memory_cache is not provided, use the default InMemoryCache
+        self.in_memory_cache = in_memory_cache or InMemoryCache()
+        # If redis_cache is not provided, use the default RedisCache
+        self.redis_cache = redis_cache
+    
+    def set_cache(self, key, value, **kwargs):
+        # Update both Redis and in-memory cache
+        try: 
+            print_verbose(f"set cache: key: {key}; value: {value}")
+            if self.in_memory_cache is not None:
+                self.in_memory_cache.set_cache(key, value, **kwargs)
+
+            if self.redis_cache is not None:
+                self.redis_cache.set_cache(key, value, **kwargs)
+        except Exception as e: 
+            print_verbose(e)
+
+    def get_cache(self, key, **kwargs):
+        # Try to fetch from in-memory cache first
+        try: 
+            print_verbose(f"get cache: cache key: {key}")
+            result = None
+            if self.in_memory_cache is not None:
+                in_memory_result = self.in_memory_cache.get_cache(key, **kwargs)
+
+                if in_memory_result is not None:
+                    result = in_memory_result
+
+            if self.redis_cache is not None: 
+                # If not found in in-memory cache, try fetching from Redis
+                redis_result = self.redis_cache.get_cache(key, **kwargs)
+
+                if redis_result is not None:
+                    # Update in-memory cache with the value from Redis
+                    self.in_memory_cache.set_cache(key, redis_result, **kwargs)
+
+                result = redis_result
+
+            print_verbose(f"get cache: cache result: {result}")
+            return result
+        except Exception as e: 
+            traceback.print_exc()
+
+#### LiteLLM.Completion Cache ####
 class Cache:
     def __init__(
             self,
@@ -142,8 +176,6 @@ class Cache:
             self.cache = RedisCache(host, port, password)
         if type == "local":
             self.cache = InMemoryCache()
-        if type == "hosted":
-            self.cache = HostedCache()
         if "cache" not in litellm.input_callback:
             litellm.input_callback.append("cache")
         if "cache" not in litellm.success_callback:
@@ -222,6 +254,8 @@ class Cache:
             else:
                 cache_key = self.get_cache_key(*args, **kwargs)
             if cache_key is not None:
+                if isinstance(result, litellm.ModelResponse):
+                    result = result.model_dump_json()
                 self.cache.set_cache(cache_key, result, **kwargs)
-        except:
+        except Exception as e:
             pass

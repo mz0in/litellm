@@ -4,13 +4,16 @@ from enum import Enum
 import time
 from typing import Callable, Optional
 import litellm
-from litellm.utils import ModelResponse, get_secret
+from litellm.utils import ModelResponse, get_secret, Usage
 from .prompt_templates.factory import prompt_factory, custom_prompt
+import httpx
 
 class BedrockError(Exception):
     def __init__(self, status_code, message):
         self.status_code = status_code
         self.message = message
+        self.request = httpx.Request(method="POST", url="https://us-west-2.console.aws.amazon.com/bedrock")
+        self.response = httpx.Response(status_code=status_code, request=self.request)
         super().__init__(
             self.message
         )  # Call the base class constructor with the parameters it needs
@@ -168,6 +171,36 @@ class AmazonAI21Config():
 class AnthropicConstants(Enum):
     HUMAN_PROMPT = "\n\nHuman: "
     AI_PROMPT = "\n\nAssistant: "
+
+class AmazonLlamaConfig(): 
+    """
+    Reference: https://us-west-2.console.aws.amazon.com/bedrock/home?region=us-west-2#/providers?model=meta.llama2-13b-chat-v1
+
+    Supported Params for the Amazon / Meta Llama models:
+
+    - `max_gen_len` (integer) max tokens,
+    - `temperature` (float) temperature for model,
+    - `top_p` (float) top p for model
+    """
+    max_gen_len: Optional[int]=None
+    temperature: Optional[float]=None
+    topP: Optional[float]=None
+
+    def __init__(self, 
+                 maxTokenCount: Optional[int]=None,
+                 temperature: Optional[float]=None,
+                 topP: Optional[int]=None) -> None:
+        locals_ = locals()
+        for key, value in locals_.items():
+            if key != 'self' and value is not None:
+                setattr(self.__class__, key, value)
+    
+    @classmethod
+    def get_config(cls):
+        return {k: v for k, v in cls.__dict__.items() 
+                if not k.startswith('__') 
+                and not isinstance(v, (types.FunctionType, types.BuiltinFunctionType, classmethod, staticmethod)) 
+                and v is not None}
 
 
 def init_bedrock_client(
@@ -334,6 +367,16 @@ def completion(
                 "prompt": prompt,
                 **inference_params
             })
+        elif provider == "meta":
+            ## LOAD CONFIG
+            config = litellm.AmazonLlamaConfig.get_config()
+            for k, v in config.items(): 
+                if k not in inference_params: # completion(top_k=3) > anthropic_config(top_k=3) <- allows for dynamic variables to be passed in
+                    inference_params[k] = v
+            data = json.dumps({
+                "prompt": prompt,
+                **inference_params
+            })
         elif provider == "amazon":  # amazon titan
             ## LOAD CONFIG
             config = litellm.AmazonTitanConfig.get_config() 
@@ -395,6 +438,8 @@ def completion(
             model_response["finish_reason"] = response_body["stop_reason"]
         elif provider == "cohere": 
             outputText = response_body["generations"][0]["text"]
+        elif provider == "meta": 
+            outputText = response_body["generation"]
         else:  # amazon titan
             outputText = response_body.get('results')[0].get('outputText')
 
@@ -419,11 +464,14 @@ def completion(
             encoding.encode(model_response["choices"][0]["message"].get("content", ""))
         )
 
-        model_response["created"] = time.time()
+        model_response["created"] = int(time.time())
         model_response["model"] = model
-        model_response.usage.completion_tokens = completion_tokens
-        model_response.usage.prompt_tokens = prompt_tokens
-        model_response.usage.total_tokens = prompt_tokens + completion_tokens
+        usage = Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens = prompt_tokens + completion_tokens
+        )
+        model_response.usage = usage
         return model_response
     except BedrockError as e:
         exception_mapping_worked = True
@@ -435,15 +483,11 @@ def completion(
             import traceback
             raise BedrockError(status_code=500, message=traceback.format_exc())
 
-
-
-def embedding(
-    model: str,
-    input: list,
-    logging_obj=None,
-    model_response=None,
-    optional_params=None,
-    encoding=None,
+def _embedding_func_single(
+        model: str,
+        input: str,
+        optional_params=None,
+        encoding=None,
 ):
     # logic for parsing in - calling - parsing out model embedding calls
     # pop aws_secret_access_key, aws_access_key_id, aws_region_name from kwargs, since completion calls fail with them
@@ -461,39 +505,76 @@ def embedding(
             aws_region_name=aws_region_name,
         ),
     )
-    
-    # translate to bedrock
-    # bedrock only accepts (str) for inputText
-    if type(input) == list:
-        if len(input) > 1: # input is a list with more than 1 elem, raise Exception, Bedrock only supports one element 
-            raise BedrockError(message="Bedrock cannot embed() more than one string - len(input) must always ==  1, input = ['hi from litellm']", status_code=400)
-        input_str = "".join(input)
 
-    response = client.invoke_model(
-        body=json.dumps({
-            "inputText": input_str
-        }),
-        modelId=model,
-        accept="*/*",
-        contentType="application/json"
+    input = input.replace(os.linesep, " ")
+    body = json.dumps({"inputText": input})
+    try:
+        response = client.invoke_model(
+            body=body,
+            modelId=model,
+            accept="application/json",
+            contentType="application/json",
+        )
+        response_body = json.loads(response.get("body").read())
+        return response_body.get("embedding")
+    except Exception as e:
+        raise BedrockError(message=f"Embedding Error with model {model}: {e}", status_code=500)
+
+def embedding(
+    model: str,
+    input: list,
+    api_key: Optional[str] = None,
+    logging_obj=None,
+    model_response=None,
+    optional_params=None,
+    encoding=None,
+):
+
+    ## LOGGING
+    logging_obj.pre_call(
+        input=input,
+        api_key=api_key,
+        additional_args={"complete_input_dict": {"model": model,
+                                                 "texts": input}},
     )
 
-    response_body = json.loads(response.get('body').read())
+    ## Embedding Call
+    embeddings = [_embedding_func_single(model, i, optional_params) for i in input]
 
-    embedding_response = response_body["embedding"]
 
+    ## Populate OpenAI compliant dictionary
+    embedding_response = []
+    for idx, embedding in enumerate(embeddings):
+        embedding_response.append(
+            {
+                "object": "embedding",
+                "index": idx,
+                "embedding": embedding,
+            }
+        )
     model_response["object"] = "list"
     model_response["data"] = embedding_response
     model_response["model"] = model
     input_tokens = 0
 
-    input_tokens+=len(encoding.encode(input_str)) 
+    input_str = "".join(input)
 
-    model_response["usage"] = { 
-        "prompt_tokens": input_tokens, 
-        "total_tokens": input_tokens,
-    }
+    input_tokens+=len(encoding.encode(input_str))
 
+    usage = Usage(
+            prompt_tokens=input_tokens,
+            completion_tokens=0,
+            total_tokens=input_tokens + 0
+    )
+    model_response.usage = usage
 
-
+    ## LOGGING
+    logging_obj.post_call(
+        input=input,
+        api_key=api_key,
+        additional_args={"complete_input_dict": {"model": model,
+                                                 "texts": input}},
+        original_response=embeddings,
+    )
+    
     return model_response

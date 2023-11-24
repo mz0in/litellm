@@ -4,13 +4,16 @@ from enum import Enum
 import requests
 import time, traceback
 from typing import Callable, Optional
-from litellm.utils import ModelResponse, Choices, Message
+from litellm.utils import ModelResponse, Choices, Message, Usage
 import litellm
+import httpx
 
 class CohereError(Exception):
     def __init__(self, status_code, message):
         self.status_code = status_code
         self.message = message
+        self.request = httpx.Request(method="POST", url="https://api.cohere.ai/v1/generate")
+        self.response = httpx.Response(status_code=status_code, request=self.request)
         super().__init__(
             self.message
         )  # Call the base class constructor with the parameters it needs
@@ -131,7 +134,7 @@ def completion(
     logging_obj.pre_call(
             input=prompt,
             api_key=api_key,
-            additional_args={"complete_input_dict": data},
+            additional_args={"complete_input_dict": data, "headers": headers, "api_base": completion_url},
         )
     ## COMPLETION CALL
     response = requests.post(
@@ -181,11 +184,14 @@ def completion(
             encoding.encode(model_response["choices"][0]["message"].get("content", ""))
         )
 
-        model_response["created"] = time.time()
+        model_response["created"] = int(time.time())
         model_response["model"] = model
-        model_response.usage.completion_tokens = completion_tokens
-        model_response.usage.prompt_tokens = prompt_tokens
-        model_response.usage.total_tokens = prompt_tokens + completion_tokens
+        usage = Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens
+        )
+        model_response.usage = usage
         return model_response
 
 def embedding(

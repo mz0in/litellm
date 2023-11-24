@@ -2,21 +2,24 @@ import os
 import json
 from enum import Enum
 import requests
-import time
+import time, httpx
 from typing import Callable, Any
-from litellm.utils import ModelResponse
+from litellm.utils import ModelResponse, Usage
 from .prompt_templates.factory import prompt_factory, custom_prompt
 llm = None
 class VLLMError(Exception):
     def __init__(self, status_code, message):
         self.status_code = status_code
         self.message = message
+        self.request = httpx.Request(method="POST", url="http://0.0.0.0:8000")
+        self.response = httpx.Response(status_code=status_code, request=self.request)
         super().__init__(
             self.message
         )  # Call the base class constructor with the parameters it needs
 
 # check if vllm is installed
-def validate_environment(model: str, llm: Any =None):
+def validate_environment(model: str):
+    global llm
     try: 
         from vllm import LLM, SamplingParams # type: ignore
         if llm is None:
@@ -88,11 +91,14 @@ def completion(
         prompt_tokens = len(outputs[0].prompt_token_ids)  
         completion_tokens = len(outputs[0].outputs[0].token_ids)  
 
-        model_response["created"] = time.time()
+        model_response["created"] = int(time.time())
         model_response["model"] = model
-        model_response.usage.completion_tokens = completion_tokens
-        model_response.usage.prompt_tokens = prompt_tokens
-        model_response.usage.total_tokens = prompt_tokens + completion_tokens
+        usage = Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens
+        )
+        model_response.usage = usage
         return model_response
 
 def batch_completions(
@@ -126,9 +132,8 @@ def batch_completions(
         ]
     )
     """
-    global llm
     try:
-        llm, SamplingParams = validate_environment(model=model, llm=llm)
+        llm, SamplingParams = validate_environment(model=model)
     except Exception as e:
         error_str = str(e)
         if "data parallel group is already initialized" in error_str:
@@ -168,11 +173,14 @@ def batch_completions(
         prompt_tokens = len(output.prompt_token_ids)  
         completion_tokens = len(output.outputs[0].token_ids)  
 
-        model_response["created"] = time.time()
+        model_response["created"] = int(time.time())
         model_response["model"] = model
-        model_response.usage.completion_tokens = completion_tokens
-        model_response.usage.prompt_tokens = prompt_tokens
-        model_response.usage.total_tokens = prompt_tokens + completion_tokens
+        usage = Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens
+        )
+        model_response.usage = usage
         final_outputs.append(model_response)
     return final_outputs
 

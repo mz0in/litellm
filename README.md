@@ -5,7 +5,7 @@
         <p align="center">Call all LLM APIs using the OpenAI format [Bedrock, Huggingface, Cohere, TogetherAI, Azure, OpenAI, etc.]
         <br>
     </p>
-<h4 align="center"><a href="https://github.com/BerriAI/litellm/tree/main/litellm/proxy" target="_blank">Evaluate LLMs → OpenAI-Compatible Server</a></h4>
+<h4 align="center"><a href="https://github.com/BerriAI/litellm/tree/main/litellm/proxy" target="_blank">OpenAI-Compatible Server</a></h4>
 <h4 align="center">
     <a href="https://pypi.org/project/litellm/" target="_blank">
         <img src="https://img.shields.io/pypi/v/litellm.svg" alt="PyPI Version">
@@ -25,14 +25,16 @@
 </h4>
 
 LiteLLM manages
-- Translating inputs to the provider's completion and embedding endpoints
+- Translating inputs to the provider's `completion` and `embedding` endpoints
 - Guarantees [consistent output](https://docs.litellm.ai/docs/completion/output), text responses will always be available at `['choices'][0]['message']['content']`
 - Exception mapping - common exceptions across providers are mapped to the OpenAI exception types.
-
-**10/05/2023:** LiteLLM is adopting Semantic Versioning for all commits. [Learn more](https://github.com/BerriAI/litellm/issues/532)  
-**10/16/2023:** **Self-hosted OpenAI-proxy server** [Learn more](https://docs.litellm.ai/docs/simple_proxy)
+- Load-balance across multiple deployments (e.g. Azure/OpenAI) - `Router`
 
 # Usage ([**Docs**](https://docs.litellm.ai/docs/))
+
+> [!IMPORTANT]
+> LiteLLM v1.0.0 is now requires `openai>=1.0.0`. Migration guide [here](https://docs.litellm.ai/docs/migration)
+
 
 <a target="_blank" href="https://colab.research.google.com/github/BerriAI/litellm/blob/main/cookbook/liteLLM_Getting_Started.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
@@ -66,45 +68,99 @@ Streaming is supported for all models (Bedrock, Huggingface, TogetherAI, Azure, 
 ```python
 from litellm import completion
 response = completion(model="gpt-3.5-turbo", messages=messages, stream=True)
-for chunk in response:
-    print(chunk['choices'][0]['delta'])
+for part in response:
+    print(part.choices[0].delta.content or "")
 
 # claude 2
-result = completion('claude-2', messages, stream=True)
-for chunk in result:
-  print(chunk['choices'][0]['delta'])
+response = completion('claude-2', messages, stream=True)
+for part in response:
+    print(part.choices[0].delta.content or "")
 ```
 
-## Reliability - Fallback LLMs
-Never fail a request using LiteLLM
-
+# Router - load balancing([Docs](https://docs.litellm.ai/docs/routing))
+LiteLLM allows you to load balance between multiple deployments (Azure, OpenAI). It picks the deployment which is below rate-limit and has the least amount of tokens used.
 ```python
-from litellm import completion
-# if gpt-4 fails, retry the request with gpt-3.5-turbo->command-nightly->claude-instant-1
-response = completion(model="gpt-4",messages=messages, fallbacks=["gpt-3.5-turbo", "command-nightly", "claude-instant-1"])
+from litellm import Router
 
-# if azure/gpt-4 fails, retry the request with fallback api_keys/api_base
-response = completion(model="azure/gpt-4", messages=messages, api_key=api_key, fallbacks=[{"api_key": "good-key-1"}, {"api_key": "good-key-2", "api_base": "good-api-base-2"}])
+model_list = [{ # list of model deployments 
+    "model_name": "gpt-3.5-turbo", # model alias 
+    "litellm_params": { # params for litellm completion/embedding call 
+        "model": "azure/chatgpt-v-2", # actual model name
+        "api_key": os.getenv("AZURE_API_KEY"),
+        "api_version": os.getenv("AZURE_API_VERSION"),
+        "api_base": os.getenv("AZURE_API_BASE")
+    }
+}, {
+    "model_name": "gpt-3.5-turbo", 
+    "litellm_params": { # params for litellm completion/embedding call 
+        "model": "azure/chatgpt-functioncalling", 
+        "api_key": os.getenv("AZURE_API_KEY"),
+        "api_version": os.getenv("AZURE_API_VERSION"),
+        "api_base": os.getenv("AZURE_API_BASE")
+    }
+}, {
+    "model_name": "gpt-3.5-turbo", 
+    "litellm_params": { # params for litellm completion/embedding call 
+        "model": "gpt-3.5-turbo", 
+        "api_key": os.getenv("OPENAI_API_KEY"),
+    }
+}]
+
+router = Router(model_list=model_list)
+
+# openai.ChatCompletion.create replacement
+response = router.completion(model="gpt-3.5-turbo", 
+                messages=[{"role": "user", "content": "Hey, how's it going?"}])
+
+print(response)
 ```
 
-## Logging Observability - Log LLM Input/Output ([Docs](https://docs.litellm.ai/docs/observability/callbacks))
-LiteLLM exposes pre defined callbacks to send data to LLMonitor, Langfuse, Helicone, Promptlayer, Traceloop, Slack
+## OpenAI Proxy - ([Docs](https://docs.litellm.ai/docs/simple_proxy))
+LiteLLM Proxy manages:
+* Calling 100+ LLMs Huggingface/Bedrock/TogetherAI/etc. in the OpenAI ChatCompletions & Completions format
+* Authentication & Spend Tracking Virtual Keys
+* Load balancing - Routing between Multiple Models + Deployments of the same model
+
+### Step 1: Start litellm proxy
+```shell
+$ litellm --model huggingface/bigcode/starcoder
+
+#INFO: Proxy running on http://0.0.0.0:8000
+```
+
+### Step 2: Replace openai base
+```python
+import openai # openai v1.0.0+
+client = openai.OpenAI(api_key="anything",base_url="http://0.0.0.0:8000") # set proxy to base_url
+# request sent to model set on litellm proxy, `litellm --model`
+response = client.chat.completions.create(model="gpt-3.5-turbo", messages = [
+    {
+        "role": "user",
+        "content": "this is a test request, write a short poem"
+    }
+])
+
+print(response)
+```
+
+## Logging Observability ([Docs](https://docs.litellm.ai/docs/observability/callbacks))
+LiteLLM exposes pre defined callbacks to send data to Langfuse, LLMonitor, Helicone, Promptlayer, Traceloop, Slack
 ```python
 from litellm import completion
 
 ## set env variables for logging tools
-os.environ["PROMPTLAYER_API_KEY"] = "your-promptlayer-key"
+os.environ["LANGFUSE_PUBLIC_KEY"] = ""
+os.environ["LANGFUSE_SECRET_KEY"] = ""
 os.environ["LLMONITOR_APP_ID"] = "your-llmonitor-app-id"
 
 os.environ["OPENAI_API_KEY"]
 
 # set callbacks
-litellm.success_callback = ["promptlayer", "llmonitor"] # log input/output to promptlayer, llmonitor, supabase
+litellm.success_callback = ["langfuse", "llmonitor"] # log input/output to langfuse, llmonitor, supabase
 
 #openai call
 response = completion(model="gpt-3.5-turbo", messages=[{"role": "user", "content": "Hi 👋 - i'm openai"}])
 ```
-
 
 ## Supported Provider ([Docs](https://docs.litellm.ai/docs/providers))
 | Provider      | [Completion](https://docs.litellm.ai/docs/#basic-usage) | [Streaming](https://docs.litellm.ai/docs/completion/stream#streaming-responses)  | [Async Completion](https://docs.litellm.ai/docs/completion/stream#async-completion)  | [Async Streaming](https://docs.litellm.ai/docs/completion/stream#async-streaming)  |

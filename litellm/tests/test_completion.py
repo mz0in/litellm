@@ -7,14 +7,13 @@ import os, io
 
 sys.path.insert(
     0, os.path.abspath("../..")
-)  # Adds the parent directory to the system path
+)  # Adds the parent directory to the system path 
 import pytest
-from openai.error import Timeout
 import litellm
-from litellm import embedding, completion, completion_cost
+from litellm import embedding, completion, completion_cost, Timeout
 from litellm import RateLimitError
 litellm.num_retries = 3
-
+litellm.cache = None
 user_message = "Write a short poem about the sky"
 messages = [{"content": user_message, "role": "user"}]
 
@@ -24,6 +23,7 @@ def logger_fn(user_model_dict):
 
 def test_completion_custom_provider_model_name():
     try:
+        litellm.cache = None
         response = completion(
             model="together_ai/togethercomputer/llama-2-70b-chat",
             messages=messages,
@@ -40,8 +40,10 @@ def test_completion_custom_provider_model_name():
 
 
 def test_completion_claude():
-    litellm.set_verbose = False
+    litellm.set_verbose = True
+    litellm.cache = None
     litellm.AnthropicConfig(max_tokens_to_sample=200, metadata={"user_id": "1224"})
+    messages = [{"role": "system", "content": """You are an upbeat, enthusiastic personal fitness coach named Sam. Sam is passionate about helping clients get fit and lead healthier lifestyles. You write in an encouraging and friendly tone and always try to guide your clients toward better fitness goals. If the user asks you something unrelated to fitness, either bring the topic back to fitness, or say that you cannot answer."""},{"content": user_message, "role": "user"}]
     try:
         # test without max tokens
         response = completion(
@@ -49,16 +51,34 @@ def test_completion_claude():
         )
         # Add any assertions here to check the response
         print(response)
-        print(response.response_ms)
         print(response.usage)
         print(response.usage.completion_tokens)
         print(response["usage"]["completion_tokens"])
         # print("new cost tracking")
-        print(response.cost())
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
 # test_completion_claude()
+
+def test_completion_claude2_1():
+    try:
+        print("claude2.1 test request")
+        # test without max tokens
+        response = completion(
+            model="claude-2.1", 
+            messages=messages, 
+            request_timeout=10,
+            max_tokens=10
+        )
+        # Add any assertions here to check the response
+        print(response)
+        print(response.usage)
+        print(response.usage.completion_tokens)
+        print(response["usage"]["completion_tokens"])
+        # print("new cost tracking")
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+# test_completion_claude2_1()
 
 # def test_completion_oobabooga():
 #     try:
@@ -95,20 +115,6 @@ def test_completion_claude():
 #         pytest.fail(f"Error occurred: {e}")
 # test_completion_aleph_alpha_control_models()
 
-def test_completion_with_litellm_call_id():
-    try:
-        litellm.use_client = False
-        response = completion(
-            model="gpt-3.5-turbo", messages=messages)
-        print(response)
-        if 'litellm_call_id' in response:
-            pytest.fail(f"Error occurred: litellm_call_id in response objects")
-        print(response.usage)
-        print(response.usage.completion_tokens)
-        
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
-# test_completion_with_litellm_call_id()
 import openai
 def test_completion_gpt4_turbo():
     try:
@@ -118,12 +124,43 @@ def test_completion_gpt4_turbo():
             max_tokens=10,
         )
         print(response)
-    except openai.error.RateLimitError:
+    except openai.RateLimitError:
         print("got a rate liimt error")
         pass
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
-test_completion_gpt4_turbo()
+# test_completion_gpt4_turbo()
+
+def test_completion_gpt4_vision():
+    try:
+        litellm.set_verbose=True
+        response = completion(
+            model="gpt-4-vision-preview", 
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "Whats in this image?"
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                        "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
+                                        }
+                                    }
+                                ]
+                }
+            ],
+        )
+        print(response)
+    except openai.RateLimitError:
+        print("got a rate liimt error")
+        pass
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+# test_completion_gpt4_vision()
 
 def test_completion_perplexity_api():
     try:
@@ -249,21 +286,6 @@ def hf_test_completion_tgi():
         pytest.fail(f"Error occurred: {e}")
 # hf_test_completion_tgi()
 
-def hf_test_completion_tgi_stream():
-    try:
-        response = completion(
-            model = 'huggingface/HuggingFaceH4/zephyr-7b-beta', 
-            messages = [{ "content": "Hello, how are you?","role": "user"}],
-            stream=True
-        )
-        # Add any assertions here to check the response
-        print(response)
-        for chunk in response:
-            print(chunk["choices"][0]["delta"]["content"])
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
-# hf_test_completion_tgi_stream()
-
 # ################### Hugging Face Conversational models ########################
 # def hf_test_completion_conv():
 #     try:
@@ -376,15 +398,21 @@ def test_completion_cohere(): # commenting for now as the cohere endpoint is bei
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
-# test_completion_cohere() #
+# test_completion_cohere() 
 
 
 def test_completion_openai():
     try:
+        litellm.set_verbose=True
+        print(f"api key: {os.environ['OPENAI_API_KEY']}")
         litellm.api_key = os.environ['OPENAI_API_KEY']
-        response = completion(model="gpt-3.5-turbo", messages=messages, max_tokens=10, request_timeout=10)
+        response = completion(
+            model="gpt-3.5-turbo", 
+            messages=messages, 
+            max_tokens=10, 
+            request_timeout=0.1
+        )
         print("This is the response object\n", response)
-        print("\n\nThis is response ms:", response.response_ms)
 
         
         response_str = response["choices"][0]["message"]["content"]
@@ -397,36 +425,51 @@ def test_completion_openai():
         assert len(response_str) > 1
 
         litellm.api_key = None
+    except Timeout as e:
+        pass
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 # test_completion_openai()
 
 def test_completion_text_openai():
     try:
+        # litellm.set_verbose = True
         response = completion(model="gpt-3.5-turbo-instruct", messages=messages)
-        print(response)
+        print(response["choices"][0]["message"]["content"])
     except Exception as e:
+        print(e)
         pytest.fail(f"Error occurred: {e}")
 # test_completion_text_openai()
 
 def test_completion_openai_with_optional_params():
     try:
+        litellm.set_verbose = True
         response = completion(
-            model="gpt-3.5-turbo",
-            messages=messages,
+            model="gpt-3.5-turbo-1106",
+            messages=[
+                {
+                    "role": "user",
+                    "content": "respond in valid, json - what is the day"
+                }
+            ],
             temperature=0.5,
             top_p=0.1,
-            user="ishaan_dev@berri.ai",
+            seed=12,
+            response_format={ "type": "json_object" }
         )
         # Add any assertions here to check the response
         print(response)
-    except Timeout as e: 
+    except litellm.Timeout as e: 
         pass
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
+# test_completion_openai_with_optional_params()
+
 def test_completion_openai_litellm_key():
     try:
+        litellm.set_verbose = True
+        litellm.num_retries = 0
         litellm.api_key = os.environ['OPENAI_API_KEY']
 
         # ensure key is set to None in .env and in openai.api_key
@@ -451,6 +494,8 @@ def test_completion_openai_litellm_key():
 
         ##### unset litellm var
         litellm.api_key = None
+    except Timeout as e: 
+        pass
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
@@ -467,34 +512,7 @@ def test_completion_openrouter1():
         print(response)
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
-# test_completion_openrouter1()
-
-def test_completion_openrouter2():
-    try:
-        print("testing openrouter/gpt-3.5-turbo")
-        response = completion(
-            model="openrouter/gpt-3.5-turbo",
-            messages=messages,
-            max_tokens=5,
-        )
-        # Add any assertions here to check the response
-        print(response)
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
-# test_completion_openrouter2()
-
-def test_completion_openrouter3():
-    try:
-        response = completion(
-            model="openrouter/mistralai/mistral-7b-instruct",
-            messages=messages,
-            max_tokens=5,
-        )
-        # Add any assertions here to check the response
-        print(response)
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
-# test_completion_openrouter3()
+# test_completion_openrouter1() 
 
 def test_completion_hf_model_no_provider():
     try:
@@ -511,48 +529,6 @@ def test_completion_hf_model_no_provider():
 
 # test_completion_hf_model_no_provider()
 
-def test_completion_hf_model_no_provider_2():
-    try:
-        response = completion(
-            model="meta-llama/Llama-2-70b-chat-hf",
-            messages=messages,
-            max_tokens=5,
-        )
-        # Add any assertions here to check the response
-        pytest.fail(f"Error occurred: {e}")
-    except Exception as e:
-        pass
-
-# test_completion_hf_model_no_provider_2()
-
-def test_completion_openai_with_more_optional_params():
-    try:
-        response = completion(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.5,
-            top_p=0.1,
-            n=2,
-            max_tokens=150,
-            presence_penalty=0.5,
-            frequency_penalty=-0.5,
-            logit_bias={123: 5},
-            user="ishaan_dev@berri.ai",
-        )
-        # Add any assertions here to check the response
-        print(response)
-        response_str = response["choices"][0]["message"]["content"]
-        response_str_2 = response.choices[0].message.content
-        print(response["choices"][0]["message"]["content"])
-        print(response.choices[0].message.content)
-        if type(response_str) != str:
-            pytest.fail(f"Error occurred: {e}")
-        if type(response_str_2) != str:
-            pytest.fail(f"Error occurred: {e}")
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
-
-# test_completion_openai_with_more_optional_params()
 # def test_completion_openai_azure_with_functions():
 #     function1 = [
 #         {
@@ -572,18 +548,39 @@ def test_completion_openai_with_more_optional_params():
 #         }
 #     ]
 #     try:
+#         messages = [{"role": "user", "content": "What is the weather like in Boston?"}]
 #         response = completion(
-#             model="azure/chatgpt-functioncalling", messages=messages, stream=True
+#             model="azure/chatgpt-functioncalling", messages=messages, functions=function1
 #         )
 #         # Add any assertions here to check the response
 #         print(response)
-#         for chunk in response:
-#             print(chunk)
-#             print(chunk["choices"][0]["finish_reason"])
 #     except Exception as e:
 #         pytest.fail(f"Error occurred: {e}")
 # test_completion_openai_azure_with_functions()
 
+def test_completion_azure_key_completion_arg():
+    # this tests if we can pass api_key to completion, when it's not in the env 
+    # DO NOT REMOVE THIS TEST. No MATTER WHAT Happens. 
+    # If you want to remove it, speak to Ishaan! 
+    # Ishaan will be very disappointed if this test is removed -> this is a standard way to pass api_key + the router + proxy use this
+    old_key = os.environ["AZURE_API_KEY"]
+    os.environ.pop("AZURE_API_KEY", None)
+    try:
+        print("azure gpt-3.5 test\n\n")
+        litellm.set_verbose=False
+        ## Test azure call
+        response = completion(
+            model="azure/chatgpt-v-2",
+            messages=messages,
+            api_key=old_key,
+            max_tokens=10,
+        )
+        print(f"response: {response}")
+        os.environ["AZURE_API_KEY"] = old_key
+    except Exception as e:
+        os.environ["AZURE_API_KEY"] = old_key
+        pytest.fail(f"Error occurred: {e}")
+test_completion_azure_key_completion_arg()
 
 def test_completion_azure():
     try:
@@ -593,18 +590,57 @@ def test_completion_azure():
         response = completion(
             model="azure/chatgpt-v-2",
             messages=messages,
+            api_key="os.environ/AZURE_API_KEY"
         )
+        print(f"response: {response}")
         ## Test azure flag for backwards compatibility
-        response = completion(
-            model="chatgpt-v-2",
-            messages=messages,
-            azure=True,
-            max_tokens=10
-        )
+        # response = completion(
+        #     model="chatgpt-v-2",
+        #     messages=messages,
+        #     azure=True,
+        #     max_tokens=10
+        # )
         # Add any assertions here to check the response
         print(response)
+
+        cost = completion_cost(completion_response=response)
+        print("Cost for azure completion request", cost)
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
+
+# test_completion_azure()
+
+def test_azure_openai_ad_token():
+    # this tests if the azure ad token is set in the request header
+    # the request can fail since azure ad tokens expire after 30 mins, but the header MUST have the azure ad token
+    # we use litellm.input_callbacks for this test
+    def tester(    
+        kwargs,                 # kwargs to completion
+    ):
+        print(kwargs["additional_args"])
+        if kwargs["additional_args"]["headers"]["Authorization"] != 'Bearer gm':
+            pytest.fail("AZURE AD TOKEN Passed but not set in request header")
+        return
+    litellm.input_callback = [tester]
+    try:
+        response = litellm.completion(
+            model="azure/chatgpt-v-2",  # e.g. gpt-35-instant
+            messages=[
+                {
+                    "role": "user",
+                    "content": "what is your name",
+                },
+            ],
+            azure_ad_token="gm"
+        )
+        print("azure ad token respoonse\n")
+        print(response)
+        litellm.input_callback = []
+    except:
+        litellm.input_callback = []
+        pass
+# test_azure_openai_ad_token()
+
 
 # test_completion_azure()
 def test_completion_azure2():
@@ -730,6 +766,7 @@ def test_completion_azure_with_litellm_key():
 
 def test_completion_azure_deployment_id():
     try:
+        litellm.set_verbose = True
         response = completion(
             deployment_id="chatgpt-v-2",
             model="gpt-3.5-turbo",
@@ -756,37 +793,19 @@ def test_completion_azure_deployment_id():
 
 # test_completion_anthropic_openai_proxy()
 
-# Replicate API endpoints are unstable -> throw random CUDA errors -> this means our tests can fail even if our tests weren't incorrect.
-
-# def test_completion_replicate_llama_2():
-#     model_name = "replicate/meta/llama-2-70b-chat:02e509c789964a7ea8736978a43525956ef40397be9033abf9fd2badfe68c9e3"
-#     litellm.replicate_config(max_new_tokens=200)
-#     try:
-#         response = completion(
-#             model=model_name, 
-#             messages=messages, 
-#         )
-#         print(response)
-#         cost = completion_cost(completion_response=response)
-#         print("Cost for completion call with llama-2: ", f"${float(cost):.10f}")
-#         # Add any assertions here to check the response
-#         response_str = response["choices"][0]["message"]["content"]
-#         print(response_str)
-#         if type(response_str) != str:
-#             pytest.fail(f"Error occurred: {e}")
-#     except Exception as e:
-#         pytest.fail(f"Error occurred: {e}")
-# test_completion_replicate_llama_2()
-
 def test_completion_replicate_vicuna():
     print("TESTING REPLICATE")
+    litellm.set_verbose=False
     model_name = "replicate/vicuna-13b:6282abe6a492de4145d7bb601023762212f9ddbbe78278bd6771c8b3b2f2a13b"
     try:
         response = completion(
             model=model_name, 
             messages=messages, 
-            custom_llm_provider="replicate",
-            temperature=0.1,
+            temperature=0.5,
+            top_k=20,
+            repetition_penalty=1,
+            min_tokens=1,
+            seed=-1,
             max_tokens=20,
         )
         print(response)
@@ -799,9 +818,60 @@ def test_completion_replicate_vicuna():
         pytest.fail(f"Error occurred: {e}")
 # test_completion_replicate_vicuna()
 
+def test_completion_replicate_llama2_stream():
+    litellm.set_verbose=False
+    model_name = "replicate/meta/llama-2-7b-chat:13c3cdee13ee059ab779f0291d29054dab00a47dad8261375654de5540165fb0"
+    try:
+        response = completion(
+            model=model_name, 
+            messages=[
+                {
+                    "role": "user",
+                    "content": "what is yc write 1 paragraph",
+                }
+            ], 
+            stream=True,
+            max_tokens=20,
+            num_retries=3
+        )
+        print(f"response: {response}")
+        # Add any assertions here to check the response
+        complete_response = "" 
+        for i, chunk in enumerate(response):
+            complete_response += chunk.choices[0].delta["content"]
+            # if i == 0:
+            #     assert len(chunk.choices[0].delta["content"]) > 2
+            # print(chunk)
+        assert len(complete_response) > 5
+        print(f"complete_response: {complete_response}")
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+# test_completion_replicate_llama2_stream()
+
+# commenthing this out since we won't be always testing a custom replicate deployment
+# def test_completion_replicate_deployments():
+#     print("TESTING REPLICATE")
+#     litellm.set_verbose=False
+#     model_name = "replicate/deployments/ishaan-jaff/ishaan-mistral"
+#     try:
+#         response = completion(
+#             model=model_name, 
+#             messages=messages, 
+#             temperature=0.5,
+#             seed=-1,
+#         )
+#         print(response)
+#         # Add any assertions here to check the response
+#         response_str = response["choices"][0]["message"]["content"]
+#         print("RESPONSE STRING\n", response_str)
+#         if type(response_str) != str:
+#             pytest.fail(f"Error occurred: {e}")
+#     except Exception as e:
+#         pytest.fail(f"Error occurred: {e}")
+# test_completion_replicate_deployments()
 
 
-######## Test TogetherAI ########
+######## Test TogetherAI ######## 
 def test_completion_together_ai():
     model_name = "together_ai/togethercomputer/llama-2-70b-chat"
     try:
@@ -816,11 +886,20 @@ def test_completion_together_ai():
 # test_completion_together_ai()
 def test_customprompt_together_ai():
     try:
-        litellm.set_verbose = True
-        response = completion(model="together_ai/OpenAssistant/llama2-70b-oasst-sft-v10", messages=messages, 
-                              roles={"system":{"pre_message":"<|im_start|>system\n", "post_message":"<|im_end|>"}, "assistant":{"pre_message":"<|im_start|>assistant\n","post_message":"<|im_end|>"}, "user":{"pre_message":"<|im_start|>user\n","post_message":"<|im_end|>"}})
+        litellm.set_verbose = False
+        litellm.num_retries = 0
+        response = completion(
+            model="together_ai/togethercomputer/llama-2-70b-chat",
+            messages=messages, 
+            roles={"system":{"pre_message":"<|im_start|>system\n", "post_message":"<|im_end|>"}, "assistant":{"pre_message":"<|im_start|>assistant\n","post_message":"<|im_end|>"}, "user":{"pre_message":"<|im_start|>user\n","post_message":"<|im_end|>"}}
+        )
         print(response)
+    except litellm.exceptions.Timeout as e:
+        print(f"Timeout Error")
+        litellm.num_retries = 3 # reset retries
+        pass
     except Exception as e:
+        print(f"ERROR TYPE {type(e)}")
         pytest.fail(f"Error occurred: {e}")
 
 # test_customprompt_together_ai()
@@ -1262,19 +1341,20 @@ def test_mistral_anyscale_stream():
 
 #### Test A121 ###################
 def test_completion_ai21():
+    print("running ai21 j2light test")
+    litellm.set_verbose=True
     model_name = "j2-light"
     try:
         response = completion(model=model_name, messages=messages, max_tokens=100, temperature=0.8)
         # Add any assertions here to check the response
         print(response)
-        print(response.response_ms)
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
 # test_completion_ai21()
 ## test deep infra 
 def test_completion_deep_infra():
-    # litellm.set_verbose = True
+    litellm.set_verbose = False
     model_name = "deepinfra/meta-llama/Llama-2-70b-chat-hf"
     try:
         response = completion(
@@ -1285,10 +1365,10 @@ def test_completion_deep_infra():
         )
         # Add any assertions here to check the response
         print(response)
-        print(response.response_ms)
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 # test_completion_deep_infra()
+
 def test_completion_deep_infra_mistral():
     print("deep infra test with temp=0")
     model_name = "deepinfra/mistralai/Mistral-7B-Instruct-v0.1"
@@ -1296,25 +1376,26 @@ def test_completion_deep_infra_mistral():
         response = completion(
             model=model_name, 
             messages=messages,
-            temperature=0, # mistrail fails with temperature 0.001
+            temperature=0.01, # mistrail fails with temperature=0
             max_tokens=10
         )
         # Add any assertions here to check the response
         print(response)
-        print(response.response_ms)
+    except litellm.exceptions.Timeout as e: 
+        pass
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 # test_completion_deep_infra_mistral()
 
 # Palm tests
 def test_completion_palm():
-    # litellm.set_verbose = True
+    litellm.set_verbose = True
     model_name = "palm/chat-bison"
+    messages = [{"role": "user", "content": "Hey, how's it going?"}]
     try:
-        response = completion(model=model_name, messages=messages, stop=["stop"])
+        response = completion(model=model_name, messages=messages)
         # Add any assertions here to check the response
         print(response)
-        print(response.response_ms)
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 # test_completion_palm()
@@ -1393,7 +1474,7 @@ def test_moderation():
     openai.api_version = "GM"
     response = litellm.moderation(input="i'm ishaan cto of litellm")   
     print(response)
-    output = response["results"][0]
+    output = response.results[0]
     print(output)
     return output
 

@@ -2,11 +2,14 @@
 import threading, requests
 from typing import Callable, List, Optional, Dict, Union
 from litellm.caching import Cache
+import httpx
 
 input_callback: List[Union[str, Callable]] = []
 success_callback: List[Union[str, Callable]] = []
 failure_callback: List[Union[str, Callable]] = []
 callbacks: List[Callable] = []
+pre_call_rules: List[Callable] = []
+post_call_rules: List[Callable] = []
 set_verbose = False
 email: Optional[
     str
@@ -18,6 +21,7 @@ telemetry = True
 max_tokens = 256  # OpenAI Defaults
 drop_params = False
 retry = True
+request_timeout: Optional[float] = 6000
 api_key: Optional[str] = None
 openai_key: Optional[str] = None
 azure_key: Optional[str] = None
@@ -44,7 +48,8 @@ max_budget: float = 0.0 # set the max budget across all providers
 _current_cost = 0 # private variable, used if max budget is set 
 error_logs: Dict = {}
 add_function_to_prompt: bool = False # if function calling not supported by api, append function call details to system prompt
-client_session: Optional[requests.Session] = None
+client_session: Optional[httpx.Client] = None
+aclient_session: Optional[httpx.AsyncClient] = None
 model_fallbacks: Optional[List] = None
 model_cost_map_url: str = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 num_retries: Optional[int] = None
@@ -139,7 +144,9 @@ for key, value in model_cost.items():
 
 # known openai compatible endpoints - we'll eventually move this list to the model_prices_and_context_window.json dictionary
 openai_compatible_endpoints: List = [
-    "api.perplexity.ai"
+    "api.perplexity.ai", 
+    "api.endpoints.anyscale.com/v1",
+    "api.deepinfra.com/v1/openai"
 ]
 
 
@@ -330,7 +337,6 @@ cohere_embedding_models: List = [
 bedrock_embedding_models: List = ["amazon.titan-embed-text-v1"]
 
 from .timeout import timeout
-from .testing import *
 from .utils import (
     client,
     exception_type,
@@ -344,6 +350,7 @@ from .utils import (
     acreate,
     get_model_list,
     get_max_tokens,
+    get_model_info,
     register_prompt_template,
     validate_environment,
     check_valid_key,
@@ -367,18 +374,24 @@ from .llms.vertex_ai import VertexAIConfig
 from .llms.sagemaker import SagemakerConfig
 from .llms.ollama import OllamaConfig
 from .llms.maritalk import MaritTalkConfig
-from .llms.bedrock import AmazonTitanConfig, AmazonAI21Config, AmazonAnthropicConfig, AmazonCohereConfig
-from .llms.openai import OpenAIConfig, OpenAITextCompletionConfig, AzureOpenAIConfig
+from .llms.bedrock import AmazonTitanConfig, AmazonAI21Config, AmazonAnthropicConfig, AmazonCohereConfig, AmazonLlamaConfig
+from .llms.openai import OpenAIConfig, OpenAITextCompletionConfig
+from .llms.azure import AzureOpenAIConfig
 from .main import *  # type: ignore
 from .integrations import *
 from .exceptions import (
     AuthenticationError,
     InvalidRequestError,
+    BadRequestError,
     RateLimitError,
     ServiceUnavailableError,
     OpenAIError,
     ContextWindowExceededError,
     BudgetExceededError, 
+    APIError,
+    Timeout,
+    APIConnectionError,
+    APIResponseValidationError
 )
 from .budget_manager import BudgetManager
 from .proxy.proxy_cli import run_server

@@ -7,6 +7,29 @@ from typing import Optional
 def default_pt(messages):
     return " ".join(message["content"] for message in messages)
 
+# alpaca prompt template - for models like mythomax, etc. 
+def alpaca_pt(messages): 
+    prompt = custom_prompt(
+        role_dict={
+            "system": {
+                "pre_message": "### Instruction:\n",
+                "post_message": "\n\n",
+            },
+            "user": {
+                "pre_message": "### Instruction:\n",
+                "post_message": "\n\n",
+            },
+            "assistant": {
+                "pre_message": "### Response:\n",
+                "post_message": "\n\n"
+            }
+        },
+        bos_token="<s>",
+        eos_token="</s>",
+        messages=messages
+    )
+    return prompt
+
 # Llama2 prompt template
 def llama_2_chat_pt(messages):
     prompt = custom_prompt(
@@ -29,25 +52,29 @@ def llama_2_chat_pt(messages):
     )
     return prompt
 
-def ollama_pt(messages): # https://github.com/jmorganca/ollama/blob/af4cf55884ac54b9e637cd71dadfe9b7a5685877/docs/modelfile.md#template
-    prompt = custom_prompt(
-        role_dict={
-            "system": {
-                "pre_message": "### System:\n",
-                "post_message": "\n"
-            }, 
-            "user": {
-                "pre_message": "### User:\n",
-                "post_message": "\n",
-            }, 
-            "assistant": {
-                "pre_message": "### Response:\n",
-                "post_message": "\n",
-            }
-        },
-        final_prompt_value="### Response:",
-        messages=messages
-    )
+def ollama_pt(model, messages): # https://github.com/jmorganca/ollama/blob/af4cf55884ac54b9e637cd71dadfe9b7a5685877/docs/modelfile.md#template
+    
+    if "instruct" in model: 
+        prompt = custom_prompt(
+            role_dict={
+                "system": {
+                    "pre_message": "### System:\n",
+                    "post_message": "\n"
+                }, 
+                "user": {
+                    "pre_message": "### User:\n",
+                    "post_message": "\n",
+                }, 
+                "assistant": {
+                    "pre_message": "### Response:\n",
+                    "post_message": "\n",
+                }
+            },
+            final_prompt_value="### Response:",
+            messages=messages
+        )
+    else: 
+        prompt = "".join(m["content"] for m in messages)
     return prompt
 
 def mistral_instruct_pt(messages): 
@@ -203,6 +230,30 @@ def hf_chat_template(model: str, messages: list):
         raise Exception("Error rendering template")
 
 # Anthropic template 
+def claude_2_1_pt(messages: list): # format - https://docs.anthropic.com/claude/docs/how-to-use-system-prompts
+    class AnthropicConstants(Enum):
+        HUMAN_PROMPT = "\n\nHuman: "
+        AI_PROMPT = "\n\nAssistant: "
+    
+    prompt = "" 
+    for idx, message in enumerate(messages): # needs to start with `\n\nHuman: ` and end with `\n\nAssistant: `
+        if message["role"] == "user":
+            prompt += (
+                f"{AnthropicConstants.HUMAN_PROMPT.value}{message['content']}"
+            )
+        elif message["role"] == "system":
+            prompt += (
+                f"{message['content']}"
+            )
+        else:
+            prompt += (
+                f"{AnthropicConstants.AI_PROMPT.value}{message['content']}"
+            )
+        if idx == 0 and message["role"] == "assistant": # ensure the prompt always starts with `\n\nHuman: `
+            prompt = f"{AnthropicConstants.HUMAN_PROMPT.value}" + prompt
+    prompt += f"{AnthropicConstants.AI_PROMPT.value}"
+    return prompt
+
 def anthropic_pt(messages: list): # format - https://docs.anthropic.com/claude/reference/complete_post
     class AnthropicConstants(Enum):
         HUMAN_PROMPT = "\n\nHuman: "
@@ -272,16 +323,17 @@ def custom_prompt(role_dict: dict, messages: list, initial_prompt_value: str="",
 def prompt_factory(model: str, messages: list, custom_llm_provider: Optional[str]=None):
     original_model_name = model
     model = model.lower()
-
     if custom_llm_provider == "ollama": 
-        return ollama_pt(messages=messages)
+        return ollama_pt(model=model, messages=messages)
     elif custom_llm_provider == "anthropic":
-        return anthropic_pt(messages=messages)
+        if "claude-2.1" in model: 
+            return claude_2_1_pt(messages=messages)
+        else: 
+            return anthropic_pt(messages=messages)
     
     try:
-        if "meta-llama/llama-2" in model:
-            if "chat" in model:
-                return llama_2_chat_pt(messages=messages)
+        if "meta-llama/llama-2" in model and "chat" in model:
+            return llama_2_chat_pt(messages=messages)
         elif "tiiuae/falcon" in model: # Note: for the instruct models, it's best to use a User: .., Assistant:.. approach in your prompt template.
             if model == "tiiuae/falcon-180B-chat":
                 return falcon_chat_pt(messages=messages)
@@ -299,6 +351,8 @@ def prompt_factory(model: str, messages: list, custom_llm_provider: Optional[str
             return phind_codellama_pt(messages=messages)
         elif "togethercomputer/llama-2" in model and ("instruct" in model or "chat" in model):
             return llama_2_chat_pt(messages=messages)
+        elif model in ["gryphe/mythomax-l2-13b", "gryphe/mythomix-l2-13b", "gryphe/mythologic-l2-13b"]:
+            return alpaca_pt(messages=messages) 
         else: 
             return hf_chat_template(original_model_name, messages)
     except:

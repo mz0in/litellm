@@ -5,13 +5,16 @@ import requests
 import time
 from typing import Callable, Optional
 import litellm
-from litellm.utils import ModelResponse
+import httpx
+from litellm.utils import ModelResponse, Usage
 from .prompt_templates.factory import prompt_factory, custom_prompt
 
 class TogetherAIError(Exception):
     def __init__(self, status_code, message):
         self.status_code = status_code
         self.message = message
+        self.request = httpx.Request(method="POST", url="https://api.together.xyz/inference")
+        self.response = httpx.Response(status_code=status_code, request=self.request)
         super().__init__(
             self.message
         )  # Call the base class constructor with the parameters it needs
@@ -123,10 +126,10 @@ def completion(
 
     ## LOGGING
     logging_obj.pre_call(
-            input=prompt,
-            api_key=api_key,
-            additional_args={"complete_input_dict": data},
-        )
+        input=prompt,
+        api_key=api_key,
+        additional_args={"complete_input_dict": data, "headers": headers, "api_base": api_base},
+    )
     ## COMPLETION CALL
     if (
             "stream_tokens" in optional_params
@@ -154,6 +157,10 @@ def completion(
             )
         print_verbose(f"raw model_response: {response.text}")
         ## RESPONSE OBJECT
+        if response.status_code != 200:
+            raise TogetherAIError(
+                status_code=response.status_code, message=response.text
+            )
         completion_response = response.json()
 
         if "error" in completion_response:
@@ -176,11 +183,14 @@ def completion(
         )
         if "finish_reason" in completion_response["output"]["choices"][0]:
             model_response.choices[0].finish_reason = completion_response["output"]["choices"][0]["finish_reason"]
-        model_response["created"] = time.time()
+        model_response["created"] = int(time.time())
         model_response["model"] = model
-        model_response.usage.completion_tokens = completion_tokens
-        model_response.usage.prompt_tokens = prompt_tokens
-        model_response.usage.total_tokens = prompt_tokens + completion_tokens
+        usage = Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens
+        )
+        model_response.usage = usage
         return model_response
 
 def embedding():
