@@ -6,7 +6,7 @@ import TabItem from '@theme/TabItem';
 ## Common Params 
 LiteLLM accepts and translates the [OpenAI Chat Completion params](https://platform.openai.com/docs/api-reference/chat/create) across all providers. 
 
-### usage
+### Usage
 ```python
 import litellm
 
@@ -23,15 +23,16 @@ response = litellm.completion(
 print(response)
 ```
 
-### translated OpenAI params
+### Translated OpenAI params
 This is a list of openai params we translate across providers.
 
 This list is constantly being updated.
 
-| Provider | temperature | max_tokens | top_p | stream | stop | n | presence_penalty | frequency_penalty | functions | function_call |
-|---|---|---|---|---|---|---|---|---|---|---|
+| Provider | temperature | max_tokens | top_p | stream | stop | n | presence_penalty | frequency_penalty | functions | function_call | logit_bias | user | response_format | seed | tools | tool_choice | logprobs | top_logprobs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 |Anthropic| ✅ | ✅ | ✅ | ✅ | ✅ |  |  |   |  |   |
-|OpenAI| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+|OpenAI| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |✅ | ✅ | ✅ | ✅ |✅ | ✅ | ✅ | ✅ |
+|Azure OpenAI| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |✅ | ✅ | ✅ | ✅ |✅ | ✅ |  |  |
 |Replicate | ✅ | ✅ | ✅ | ✅ | ✅ | |  |   |  |   |
 |Anyscale | ✅ | ✅ | ✅ | ✅ |
 |Cohere| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |   |   |
@@ -40,7 +41,7 @@ This list is constantly being updated.
 |AI21| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |   |
 |VertexAI| ✅ | ✅ |  | ✅ |  |  |  |  |  |   |
 |Bedrock| ✅ | ✅ | ✅ | ✅ | ✅ |  |  |   |  |   |
-|Sagemaker| ✅ | ✅ |  | ✅ |  |  |  |  |  |   |
+|Sagemaker| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |  |   |
 |TogetherAI| ✅ | ✅ | ✅ | ✅ | ✅ |  |  |   |  |   |
 |AlephAlpha| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |   |  |   |
 |Palm| ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |  |   |
@@ -66,6 +67,7 @@ def completion(
     model: str,
     messages: List = [],
     # Optional OpenAI params
+    timeout: Optional[Union[float, int]] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     n: Optional[int] = None,
@@ -73,29 +75,28 @@ def completion(
     stop=None,
     max_tokens: Optional[float] = None,
     presence_penalty: Optional[float] = None,
-    frequency_penalty: Optional[float]=None,
-    logit_bias: dict = {},
-    user: str = "",
-    deployment_id = None,
-    request_timeout: Optional[int] = None,
+    frequency_penalty: Optional[float] = None,
+    logit_bias: Optional[dict] = None,
+    user: Optional[str] = None,
+    # openai v1.0+ new params
     response_format: Optional[dict] = None,
     seed: Optional[int] = None,
     tools: Optional[List] = None,
     tool_choice: Optional[str] = None,
-    functions: List = [],       # soon to be deprecated
-    function_call: str = "",    # soon to be deprecated
-
-    # Optional LiteLLM params
-    api_base: Optional[str] = None,
+    logprobs: Optional[bool] = None,
+    top_logprobs: Optional[int] = None,
+    deployment_id=None,
+    # soon to be deprecated params by OpenAI
+    functions: Optional[List] = None,
+    function_call: Optional[str] = None,
+    # set api_base, api_version, api_key
+    base_url: Optional[str] = None,
     api_version: Optional[str] = None,
     api_key: Optional[str] = None,
-    num_retries: Optional[int] = None, # set to retry a model if an APIError, TimeoutError, or ServiceUnavailableError occurs 
-    context_window_fallback_dict: Optional[dict] = None, # mapping of model to use if call fails due to context window error
-    fallbacks: Optional[list] = None, # pass in a list of api_base,keys, etc. 
-    metadata: Optional[dict] = None # additional call metadata, passed to logging integrations / custom callbacks
-    
-
+    model_list: Optional[list] = None,  # pass in a list of api_base,keys, etc.
+    # Optional liteLLM function params
     **kwargs,
+
 ) -> ModelResponse:
 ```
 ### Required Fields
@@ -119,7 +120,7 @@ def completion(
 
 ## Optional Fields
 
-`temperature`: *number or null (optional)* - The sampling temperature to be used, between 0 and 2. Higher values like 0.8 produce more random outputs, while lower values like 0.2 make outputs more focused and deterministic. 
+- `temperature`: *number or null (optional)* - The sampling temperature to be used, between 0 and 2. Higher values like 0.8 produce more random outputs, while lower values like 0.2 make outputs more focused and deterministic. 
 
 - `top_p`: *number or null (optional)* - An alternative to sampling with temperature. It instructs the model to consider the results of the tokens with top_p probability. For example, 0.1 means only the tokens comprising the top 10% probability mass are considered.
 
@@ -159,6 +160,10 @@ def completion(
 
 - `timeout`: *int (optional)* - Timeout in seconds for completion requests (Defaults to 600 seconds)
 
+- `logprobs`: * bool (optional)* - Whether to return log probabilities of the output tokens or not. If true returns the log probabilities of each output token returned in the content of message
+        
+- `top_logprobs`: *int (optional)* - An integer between 0 and 5 specifying the number of most likely tokens to return at each token position, each with an associated log probability. `logprobs` must be set to true if this parameter is used.
+
 #### Deprecated Params
 - `functions`: *array* - A list of functions that the model may use to generate JSON inputs. Each function should have the following properties:
 
@@ -184,6 +189,25 @@ def completion(
 - `fallbacks`: *list (optional)* - A list of model names + params to be used, in case the initial call fails
 
 - `metadata`: *dict (optional)* - Any additional data you want to be logged when the call is made (sent to logging integrations, eg. promptlayer and accessible via custom callback function)
+
+**CUSTOM MODEL COST** 
+- `input_cost_per_token`: *float (optional)* - The cost per input token for the completion call 
+
+- `output_cost_per_token`: *float (optional)* - The cost per output token for the completion call 
+
+**CUSTOM PROMPT TEMPLATE** (See [prompt formatting for more info](./prompt_formatting.md#format-prompt-yourself))
+- `initial_prompt_value`: *string (optional)* - Initial string applied at the start of the input messages
+
+- `roles`: *dict (optional)* - Dictionary specifying how to format the prompt based on the role + message passed in via `messages`. 
+
+- `final_prompt_value`: *string (optional)* - Final string applied at the end of the input messages
+
+- `bos_token`: *string (optional)* - Initial string applied at the start of a sequence
+
+- `eos_token`: *string (optional)* - Initial string applied at the end of a sequence
+
+- `hf_model_name`: *string (optional)* - [Sagemaker Only] The corresponding huggingface name of the model, used to pull the right chat template for the model. 
+
 
 ## Provider-specific Params
 Providers might offer params not supported by OpenAI (e.g. top_k). You can pass those in 2 ways: 

@@ -13,14 +13,12 @@ import pytest
 
 litellm.set_verbose = True
 
-model_alias_map = {
-    "good-model": "anyscale/meta-llama/Llama-2-7b-chat-hf"
-}
+model_alias_map = {"good-model": "anyscale/meta-llama/Llama-2-7b-chat-hf"}
 
-litellm.model_alias_map = model_alias_map
 
 def test_model_alias_map():
     try:
+        litellm.model_alias_map = model_alias_map
         response = completion(
             "good-model",
             messages=[{"role": "user", "content": "Hey, how's it going?"}],
@@ -32,6 +30,6 @@ def test_model_alias_map():
         assert "Llama-2-7b-chat-hf" in response.model
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
-        
+
 
 test_model_alias_map()

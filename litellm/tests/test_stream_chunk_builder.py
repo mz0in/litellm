@@ -1,63 +1,145 @@
+import sys, os, time
+import traceback, asyncio
+import pytest
+
+sys.path.insert(
+    0, os.path.abspath("../..")
+)  # Adds the parent directory to the system path
 from litellm import completion, stream_chunk_builder
 import litellm
 import os, dotenv
+from openai import OpenAI
 import pytest
+
 dotenv.load_dotenv()
 
 user_message = "What is the current weather in Boston?"
 messages = [{"content": user_message, "role": "user"}]
 
 function_schema = {
-  "name": "get_weather",
-  "description":
-  "gets the current weather",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "location": {
-        "type": "string",
-        "description":
-        "The city and state, e.g. San Francisco, CA"
-      },
+    "name": "get_weather",
+    "description": "gets the current weather",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": "The city and state, e.g. San Francisco, CA",
+            },
+        },
+        "required": ["location"],
     },
-    "required": ["location"]
-  },
 }
 
-@pytest.mark.skip
-def test_stream_chunk_builder():
-    litellm.set_verbose = False
-    litellm.api_key = os.environ["OPENAI_API_KEY"]
-    response = completion(
-        model="gpt-3.5-turbo",
-        messages=messages,
-        functions=[function_schema],
-        stream=True,
-    )
 
-    chunks = []
+tools_schema = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather in a given location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "The city and state, e.g. San Francisco, CA",
+                    },
+                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+                },
+                "required": ["location"],
+            },
+        },
+    }
+]
 
-    for chunk in response:
-        # print(chunk)
-        chunks.append(chunk)
+# def test_stream_chunk_builder_tools():
+#     try:
+#       litellm.set_verbose = False
+#       response = client.chat.completions.create(
+#           model="gpt-3.5-turbo",
+#           messages=messages,
+#           tools=tools_schema,
+#           # stream=True,
+#           # complete_response=True # runs stream_chunk_builder under-the-hood
+#       )
 
+#       print(f"response: {response}")
+#       print(f"response usage: {response.usage}")
+#     except Exception as e:
+#        pytest.fail(f"An exception occurred - {str(e)}")
+
+# test_stream_chunk_builder_tools()
+
+
+def test_stream_chunk_builder_litellm_function_call():
     try:
-        print(f"chunks: {chunks}")
-        rebuilt_response = stream_chunk_builder(chunks)
+        litellm.set_verbose = False
+        response = litellm.completion(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            functions=[function_schema],
+            # stream=True,
+            # complete_response=True # runs stream_chunk_builder under-the-hood
+        )
 
-        # exract the response from the rebuilt response
-        rebuilt_response["id"]
-        rebuilt_response["object"]
-        rebuilt_response["created"]
-        rebuilt_response["model"]
-        rebuilt_response["choices"]
-        rebuilt_response["choices"][0]["index"]
-        choices = rebuilt_response["choices"][0]
-        message = choices["message"]
-        role = message["role"]
-        content = message["content"]
-        finish_reason = choices["finish_reason"]
-        print(role, content, finish_reason)
+        print(f"response: {response}")
     except Exception as e:
-        raise Exception("stream_chunk_builder failed to rebuild response", e)
+        pytest.fail(f"An exception occurred - {str(e)}")
 
+
+# test_stream_chunk_builder_litellm_function_call()
+
+
+def test_stream_chunk_builder_litellm_tool_call():
+    try:
+        litellm.set_verbose = True
+        response = litellm.completion(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            tools=tools_schema,
+            stream=True,
+            complete_response=True,
+        )
+
+        print(f"complete response: {response}")
+        print(f"complete response usage: {response.usage}")
+        assert response.usage.completion_tokens > 0
+        assert response.usage.prompt_tokens > 0
+        assert (
+            response.usage.total_tokens
+            == response.usage.completion_tokens + response.usage.prompt_tokens
+        )
+    except Exception as e:
+        pytest.fail(f"An exception occurred - {str(e)}")
+
+
+# test_stream_chunk_builder_litellm_tool_call()
+
+
+def test_stream_chunk_builder_litellm_tool_call_regular_message():
+    try:
+        messages = [{"role": "user", "content": "Hey, how's it going?"}]
+        litellm.set_verbose = False
+        response = litellm.completion(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            tools=tools_schema,
+            stream=True,
+            complete_response=True,
+        )
+
+        print(f"complete response: {response}")
+        print(f"complete response usage: {response.usage}")
+        assert response.usage.completion_tokens > 0
+        assert response.usage.prompt_tokens > 0
+        assert (
+            response.usage.total_tokens
+            == response.usage.completion_tokens + response.usage.prompt_tokens
+        )
+
+    except Exception as e:
+        pytest.fail(f"An exception occurred - {str(e)}")
+
+
+# test_stream_chunk_builder_litellm_tool_call_regular_message()

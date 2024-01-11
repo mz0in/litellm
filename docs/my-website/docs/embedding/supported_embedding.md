@@ -103,6 +103,20 @@ print(response)
 
 h/t to [Mikko](https://www.linkedin.com/in/mikkolehtimaki/) for this integration
 
+## OpenAI Compatible Embedding Models
+Use this for calling `/embedding` endpoints on OpenAI Compatible Servers, example https://github.com/xorbitsai/inference
+
+**Note add `openai/` prefix to model so litellm knows to route to OpenAI**
+
+### Usage
+```python
+from litellm import embedding
+response = embedding(
+  model = "openai/<your-llm-name>",     # add `openai/` prefix to model so litellm knows to route to OpenAI
+  api_base="http://0.0.0.0:8000/"       # set API Base of your Custom OpenAI Endpoint
+  input=["good morning from litellm"]
+)
+```
 
 ## Bedrock Embedding
 
@@ -128,6 +142,8 @@ print(response)
 | Model Name           | Function Call                               |
 |----------------------|---------------------------------------------|
 | Titan Embeddings - G1 | `embedding(model="amazon.titan-embed-text-v1", input=input)` |
+| Cohere Embeddings - English | `embedding(model="cohere.embed-english-v3", input=input)` |
+| Cohere Embeddings - Multilingual | `embedding(model="cohere.embed-multilingual-v3", input=input)` |
 
 
 ## Cohere Embedding Models
@@ -168,9 +184,66 @@ response = embedding(
     input=["good morning from litellm"]
 )
 ```
+### Usage - Custom API Base
+```python
+from litellm import embedding
+import os
+os.environ['HUGGINGFACE_API_KEY'] = ""
+response = embedding(
+    model='huggingface/microsoft/codebert-base', 
+    input=["good morning from litellm"],
+    api_base = "https://p69xlsj6rpno5drq.us-east-1.aws.endpoints.huggingface.cloud"
+)
+```
 
 | Model Name            | Function Call | Required OS Variables                        |
 |-----------------------|--------------------------------------------------------------|-------------------------------------------------|
 | microsoft/codebert-base    | `embedding('huggingface/microsoft/codebert-base', input=input)`               | `os.environ['HUGGINGFACE_API_KEY']`                                             |
 | BAAI/bge-large-zh | `embedding('huggingface/BAAI/bge-large-zh', input=input)`         | `os.environ['HUGGINGFACE_API_KEY']`                                             |
 | any-hf-embedding-model | `embedding('huggingface/hf-embedding-model', input=input)`         | `os.environ['HUGGINGFACE_API_KEY']`                                             |
+
+
+## Mistral AI Embedding Models
+All models listed here https://docs.mistral.ai/platform/endpoints are supported
+
+### Usage
+```python
+from litellm import embedding
+import os
+
+os.environ['MISTRAL_API_KEY'] = ""
+response = embedding(
+    model="mistral/mistral-embed",
+    input=["good morning from litellm"],
+)
+print(response)
+```
+
+| Model Name               | Function Call                                                                                                                                                      |
+|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| mistral-embed | `embedding(model="mistral/mistral-embed", input)` | 
+
+
+## Voyage AI Embedding Models
+
+### Usage - Embedding
+```python
+from litellm import embedding
+import os
+
+os.environ['VOYAGE_API_KEY'] = ""
+response = embedding(
+    model="voyage/voyage-01",
+    input=["good morning from litellm"],
+)
+print(response)
+```
+
+## Supported Models
+All models listed here https://docs.voyageai.com/embeddings/#models-and-specifics are supported
+
+| Model Name               | Function Call                                                                                                                                                      |
+|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| voyage-01 | `embedding(model="voyage/voyage-01", input)` | 
+| voyage-lite-01 | `embedding(model="voyage/voyage-lite-01", input)` | 
+| voyage-lite-01-instruct | `embedding(model="voyage/voyage-lite-01-instruct", input)` | 
